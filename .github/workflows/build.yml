@@ -1,26 +1,27 @@
 name: Build Windows EXE
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   build-exe:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
     - name: Setup Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
-        node-version: "20"
+        node-version: 20
+        cache: "npm"
 
     - name: Install dependencies
-      run: npm ci
+      run: npm install
 
     - name: Build client + backend
       run: npm run build
@@ -28,12 +29,12 @@ jobs:
     - name: Build Electron EXE
       run: npm run electron:build
 
-    - name: Upload Build Artifacts
-      uses: actions/upload-artifact@v3
+    - name: Upload Windows EXE
+      uses: actions/upload-artifact@v4
       with:
         name: windows-exe
         path: |
-          dist/*.exe
-          dist/*.zip
-          release/*.exe
-          release/*.zip
+          dist/**/*.exe
+          dist/**/*.zip
+          release/**/*.exe
+          release/**/*.zip
