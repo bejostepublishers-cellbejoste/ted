@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: appconnect-images
+    env: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+databases:
+  - name: app-db
+    plan: free

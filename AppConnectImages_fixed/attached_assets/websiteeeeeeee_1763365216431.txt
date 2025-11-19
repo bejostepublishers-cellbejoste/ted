@@ -1,0 +1,775 @@
+/creator-brand-marketplace
+│
+├── server.js
+├── package.json
+├── /config
+│     └── db.js
+├── /routes
+│     ├── auth.js
+│     ├── deals.js
+│     ├── messages.js
+│     ├── payments.js
+│     └── search.js
+├── /controllers
+│     ├── authController.js
+│     ├── paymentController.js
+│     ├── messageController.js
+│     ├── dealController.js
+│     └── searchController.js
+├── /middleware
+│     ├── authMiddleware.js
+│     └── blockOffPlatform.js
+├── /models
+│     ├── User.js
+│     ├── Deal.js
+│     ├── Message.js
+│     └── Subscription.js
+└── /public
+      ├── index.html
+      ├── dashboard.html
+      ├── signup.html
+      ├── login.html
+      └── style.css
+const express = require('express');
+const cors = require('cors');
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+app.use('/auth', require('./routes/auth'));
+app.use('/payments', require('./routes/payments'));
+app.use('/messages', require('./routes/messages'));
+app.use('/deals', require('./routes/deals'));
+app.use('/search', require('./routes/search'));
+
+app.listen(5000, () => console.log("Server running on port 5000"));
+const { Pool } = require("pg");
+const pool = new Pool();
+
+module.exports = {
+    createUser: async (name, email, hashedPassword, role) => {
+        return pool.query(
+            `INSERT INTO users (name, email, password, role)
+             VALUES ($1,$2,$3,$4) RETURNING *`,
+            [name, email, hashedPassword, role]
+        );
+    },
+
+    findByEmail: async (email) => {
+        return pool.query(`SELECT * FROM users WHERE email=$1`, [email]);
+    }
+};
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+
+exports.signup = async (req, res) => {
+    const { name, email, password, role } = req.body;
+    const hashed = await bcrypt.hash(password, 10);
+
+    const user = await User.createUser(name, email, hashed, role);
+
+    res.json({ success: true, user: user.rows[0] });
+};
+
+exports.login = async (req, res) => {
+    const { email, password } = req.body;
+    const userRes = await User.findByEmail(email);
+
+    if (userRes.rows.length === 0) return res.status(400).json({ error: "No user" });
+
+    const user = userRes.rows[0];
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ error: "Wrong password" });
+
+    const token = jwt.sign({ id: user.id, role: user.role }, "SECRET", {
+        expiresIn: "7d"
+    });
+
+    res.json({ token });
+};
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
+exports.createDealPayment = async (req, res) => {
+    const { amount } = req.body;
+
+    const fee = amount * 0.09; // 9%
+
+    const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        mode: 'payment',
+        line_items: [{
+            price_data: {
+                currency: "usd",
+                product_data: {
+                    name: "Brand to Creator Payment"
+                },
+                unit_amount: Math.round(amount * 100)
+            },
+            quantity: 1
+        }],
+        payment_intent_data: {
+            application_fee_amount: Math.round(fee * 100) // 9% to platform
+        },
+        success_url: "https://yourwebsite.com/success",
+        cancel_url: "https://yourwebsite.com/cancel"
+    });
+
+    res.json({ url: session.url });
+};
+
+// Monthly subscription (both creator & brand)
+exports.createSubscription = async (req, res) => {
+    const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        line_items: [{
+            price_data: {
+                currency: "usd",
+                recurring: { interval: "month" },
+                product_data: { name: "Search Access Subscription" },
+                unit_amount: 800 // $8
+            }
+        }],
+        success_url: "https://yourwebsite.com/sub-success",
+        cancel_url: "https://yourwebsite.com/sub-cancel"
+    });
+    res.json({ url: session.url });
+};
+module.exports = function(req, res, next) {
+    const message = req.body.message;
+
+    const banned = ["@", "email", ".com", "phone", "call", "whatsapp", "telegram"];
+
+    for (let b of banned) {
+        if (message.toLowerCase().includes(b)) {
+            return res.status(400).json({
+                error: "Off-platform communication blocked."
+            });
+        }
+    }
+
+    next();
+};
+const express = require('express');
+const router = express.Router();
+const blockOffPlatform = require("../middleware/blockOffPlatform");
+const MessageController = require("../controllers/messageController");
+
+router.post('/send', blockOffPlatform, MessageController.sendMessage);
+router.get('/:dealId', MessageController.getMessages);
+
+module.exports = router;
+exports.sendMessage = async (req, res) => {
+    // save to DB (omitted)
+    res.json({ success: true });
+};
+
+exports.getMessages = async (req, res) => {
+    res.json({ messages: [] });
+};
+const express = require('express');
+const router = express.Router();
+const SearchController = require("../controllers/searchController");
+const auth = require("../middleware/authMiddleware");
+
+router.get('/', auth, SearchController.search);
+
+module.exports = router;
+const express = require('express');
+const router = express.Router();
+const SearchController = require("../controllers/searchController");
+const auth = require("../middleware/authMiddleware");
+
+router.get('/', auth, SearchController.search);
+
+module.exports = router;
+exports.search = async (req, res) => {
+    if (!req.user.hasSubscription) {
+        return res.status(403).json({ error: "Subscription required." });
+    }
+
+    res.json([
+        { id: 1, title: "Brand X needs TikTok review" },
+        { id: 2, title: "Brand Y needs IG Reel" }
+    ]);
+};
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Creator–Brand Marketplace</title>
+    <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+    <h1>Welcome</h1>
+    <a href="signup.html">Sign Up</a>
+    <a href="login.html">Login</a>
+</body>
+</html>
+-- USERS TABLE
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(120),
+    email VARCHAR(200) UNIQUE,
+    password VARCHAR(200),
+    role VARCHAR(20), -- creator or brand
+    has_subscription BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- SUBSCRIPTIONS TABLE
+CREATE TABLE subscriptions (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    active BOOLEAN DEFAULT TRUE,
+    started_at TIMESTAMP DEFAULT NOW()
+);
+
+-- DEALS TABLE
+CREATE TABLE deals (
+    id SERIAL PRIMARY KEY,
+    brand_id INT REFERENCES users(id),
+    creator_id INT REFERENCES users(id),
+    title VARCHAR(200),
+    description TEXT,
+    amount NUMERIC,
+    status VARCHAR(20) DEFAULT 'pending', -- pending, accepted, paid, completed
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- MESSAGES TABLE
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    deal_id INT REFERENCES deals(id),
+    sender_id INT REFERENCES users(id),
+    content TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+-- USERS TABLE
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(120),
+    email VARCHAR(200) UNIQUE,
+    password VARCHAR(200),
+    role VARCHAR(20), -- creator or brand
+    has_subscription BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- SUBSCRIPTIONS TABLE
+CREATE TABLE subscriptions (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    active BOOLEAN DEFAULT TRUE,
+    started_at TIMESTAMP DEFAULT NOW()
+);
+
+-- DEALS TABLE
+CREATE TABLE deals (
+    id SERIAL PRIMARY KEY,
+    brand_id INT REFERENCES users(id),
+    creator_id INT REFERENCES users(id),
+    title VARCHAR(200),
+    description TEXT,
+    amount NUMERIC,
+    status VARCHAR(20) DEFAULT 'pending', -- pending, accepted, paid, completed
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- MESSAGES TABLE
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    deal_id INT REFERENCES deals(id),
+    sender_id INT REFERENCES users(id),
+    content TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+<!DOCTYPE html>
+<html>
+<head>
+<title>Login</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h2>Login</h2>
+
+<form id="loginForm">
+    <input type="email" id="email" placeholder="Email"><br>
+    <input type="password" id="password" placeholder="Password"><br>
+    <button type="submit">Login</button>
+</form>
+
+<script>
+document.getElementById("loginForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const res = await fetch("/auth/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            email: email.value,
+            password: password.value
+        })
+    });
+    const data = await res.json();
+    if(data.token){
+        localStorage.setItem("token", data.token);
+        window.location = "dashboard.html";
+    } else {
+        alert("Incorrect login");
+    }
+};
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Dashboard</h1>
+
+<button onclick="subscribe()">Subscribe ($8/mo required)</button>
+<button onclick="loadDeals()">View Deals</button>
+<button onclick="createDeal()">Post Opportunity (Brands)</button>
+
+<div id="results"></div>
+
+<script>
+const token = localStorage.getItem("token");
+
+async function subscribe(){
+    const res = await fetch("/payments/subscription", {
+        method: "POST",
+        headers: {"Authorization": token}
+    });
+    const data = await res.json();
+    window.location = data.url;
+}
+
+async function loadDeals(){
+    const res = await fetch("/search", {
+        headers: {"Authorization": token}
+    });
+    const data = await res.json();
+    document.getElementById("results").innerHTML = JSON.stringify(data);
+}
+
+function createDeal(){
+    window.location = "new_deal.html";
+}
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>New Deal</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h2>Post New Content Opportunity</h2>
+
+<form id="dealForm">
+    <input type="text" id="title" placeholder="Deal Title"><br>
+    <textarea id="description" placeholder="Describe your campaign"></textarea><br>
+    <input type="number" id="amount" placeholder="Payment in USD"><br>
+    <button type="submit">Create</button>
+</form>
+
+<script>
+const token = localStorage.getItem("token");
+
+document.getElementById("dealForm").onsubmit = async (e)=>{
+    e.preventDefault();
+    const res = await fetch("/deals/create", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": token
+        },
+        body: JSON.stringify({
+            title: title.value,
+            description: description.value,
+            amount: amount.value
+        })
+    });
+    const data = await res.json();
+    alert("Deal created!");
+    window.location = "dashboard.html";
+};
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Messages</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Deal Messages</h1>
+
+<div id="messages"></div>
+
+<input id="msg" placeholder="Type a message...">
+<button onclick="sendMessage()">Send</button>
+
+<script>
+const token = localStorage.getItem("token");
+const dealId = new URLSearchParams(location.search).get("deal");
+
+async function loadMessages(){
+    const res = await fetch("/messages/" + dealId, {
+        headers: {"Authorization": token}
+    });
+    const data = await res.json();
+    document.getElementById("messages").innerHTML =
+        data.messages.map(m => `<p><b>${m.sender_id}</b>: ${m.content}</p>`).join("");
+}
+
+async function sendMessage(){
+    const content = msg.value;
+    const res = await fetch("/messages/send", {
+        method: "POST",
+        headers: {
+            "Authorization": token,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ dealId, message: content })
+    });
+    msg.value = "";
+    loadMessages();
+}
+
+loadMessages();
+</script>
+
+</body>
+</html>
+const { Pool } = require("pg");
+const pool = new Pool();
+
+exports.sendMessage = async (req, res) => {
+    const { dealId, message } = req.body;
+    const senderId = req.user.id;
+
+    await pool.query(
+        `INSERT INTO messages (deal_id, sender_id, content)
+        VALUES ($1,$2,$3)`,
+        [dealId, senderId, message]
+    );
+
+    res.json({ success: true });
+};
+
+exports.getMessages = async (req, res) => {
+    const { dealId } = req.params;
+    const msgs = await pool.query(
+        `SELECT * FROM messages WHERE deal_id=$1 ORDER BY id ASC`,
+        [dealId]
+    );
+    res.json({ messages: msgs.rows });
+};
+const express = require("express");
+const router = express.Router();
+const dealController = require("../controllers/dealController");
+const auth = require("../middleware/authMiddleware");
+
+router.post("/create", auth, dealController.createDeal);
+router.post("/accept", auth, dealController.acceptDeal);
+router.get("/my", auth, dealController.myDeals);
+
+module.exports = router;
+const { Pool } = require("pg");
+const pool = new Pool();
+
+exports.createDeal = async (req, res) => {
+    if (req.user.role !== "brand")
+        return res.status(403).json({ error: "Only brands create deals" });
+
+    const { title, description, amount } = req.body;
+
+    const newDeal = await pool.query(
+        `INSERT INTO deals (brand_id,title,description,amount)
+         VALUES ($1,$2,$3,$4) RETURNING *`,
+        [req.user.id, title, description, amount]
+    );
+
+    res.json(newDeal.rows[0]);
+};
+
+exports.acceptDeal = async (req, res) => {
+    const { dealId } = req.body;
+
+    const result = await pool.query(
+        `UPDATE deals SET creator_id=$1, status='accepted'
+         WHERE id=$2 RETURNING *`,
+        [req.user.id, dealId]
+    );
+
+    res.json(result.rows[0]);
+};
+
+exports.myDeals = async (req, res) => {
+    const result = await pool.query(
+        `SELECT * FROM deals WHERE brand_id=$1 OR creator_id=$1`,
+        [req.user.id]
+    );
+    res.json(result.rows);
+};
+const paypal = require("@paypal/checkout-server-sdk");
+
+let env = new paypal.core.SandboxEnvironment(
+    process.env.PAYPAL_CLIENT,
+    process.env.PAYPAL_SECRET
+);
+let client = new paypal.core.PayPalHttpClient(env);
+
+exports.paypalDealPayment = async (req, res) => {
+    const { amount } = req.body;
+    const fee = amount * 0.09;
+
+    const request = new paypal.orders.OrdersCreateRequest();
+    request.requestBody({
+        intent: "CAPTURE",
+        purchase_units: [{
+            amount: {
+                currency_code: "USD",
+                value: amount.toString(),
+                breakdown: {
+                    item_total: { currency_code: "USD", value: amount.toString() }
+                }
+            },
+            payment_instruction: {
+                platform_fees: [{
+                    amount: { currency_code: "USD", value: fee.toString() }
+                }]
+            }
+        }]
+    });
+
+    const order = await client.execute(request);
+    res.json({ id: order.result.id });
+};
+<!DOCTYPE html>
+<html>
+<head>
+<title>Admin Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Admin Dashboard</h1>
+
+<div>
+    <h2>Users</h2>
+    <div id="users"></div>
+</div>
+
+<div>
+    <h2>Deals</h2>
+    <div id="deals"></div>
+</div>
+
+<script>
+const token = localStorage.getItem("token");
+
+async function loadUsers() {
+    const res = await fetch("/admin/users", {
+        headers: {"Authorization": token}
+    });
+    const data = await res.json();
+    document.getElementById("users").innerHTML = data.map(u =>
+        `<p>${u.id} - ${u.name} - ${u.email} - ${u.role} 
+        <button onclick="banUser(${u.id})">Ban</button></p>`).join("");
+}
+
+async function loadDeals() {
+    const res = await fetch("/admin/deals", {
+        headers: {"Authorization": token}
+    });
+    const data = await res.json();
+    document.getElementById("deals").innerHTML = data.map(d =>
+        `<p>${d.id} - ${d.title} - ${d.amount} - ${d.status} 
+        <button onclick="refundDeal(${d.id})">Refund</button></p>`).join("");
+}
+
+async function banUser(id) {
+    await fetch("/admin/ban", {
+        method: "POST",
+        headers: {"Authorization": token,"Content-Type":"application/json"},
+        body: JSON.stringify({ userId: id })
+    });
+    loadUsers();
+}
+
+async function refundDeal(id) {
+    await fetch("/admin/refund", {
+        method: "POST",
+        headers: {"Authorization": token,"Content-Type":"application/json"},
+        body: JSON.stringify({ dealId: id })
+    });
+    loadDeals();
+}
+
+loadUsers();
+loadDeals();
+</script>
+
+</body>
+</html>
+const express = require("express");
+const router = express.Router();
+const auth = require("../middleware/authMiddleware");
+const pool = require("pg").Pool ? new (require("pg").Pool)() : null;
+
+router.use(auth);
+
+router.get("/users", async (req, res) => {
+    if(req.user.role !== "admin") return res.status(403).send("Forbidden");
+    const users = await pool.query("SELECT * FROM users");
+    res.json(users.rows);
+});
+
+router.get("/deals", async (req,res)=>{
+    if(req.user.role !== "admin") return res.status(403).send("Forbidden");
+    const deals = await pool.query("SELECT * FROM deals");
+    res.json(deals.rows);
+});
+
+router.post("/ban", async (req,res)=>{
+    if(req.user.role !== "admin") return res.status(403).send("Forbidden");
+    await pool.query("DELETE FROM users WHERE id=$1", [req.body.userId]);
+    res.json({success:true});
+});
+
+router.post("/refund", async (req,res)=>{
+    if(req.user.role !== "admin") return res.status(403).send("Forbidden");
+    await pool.query("UPDATE deals SET status='refunded' WHERE id=$1", [req.body.dealId]);
+    res.json({success:true});
+});
+
+module.exports = router;
+<!DOCTYPE html>
+<html>
+<head>
+<title>Creator Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Your Portfolio</h1>
+
+<h2>Profile</h2>
+<p id="profile"></p>
+
+<h2>Deals Completed</h2>
+<div id="deals"></div>
+
+<script>
+const token = localStorage.getItem("token");
+
+async function loadPortfolio() {
+    const res = await fetch("/deals/my", { headers:{ "Authorization": token } });
+    const deals = await res.json();
+    document.getElementById("deals").innerHTML = deals
+        .filter(d => d.status==="completed")
+        .map(d => `<p>${d.title} - $${d.amount}</p>`).join("");
+
+    const profileRes = await fetch("/auth/me", { headers:{ "Authorization": token } });
+    const profile = await profileRes.json();
+    document.getElementById("profile").innerText = `${profile.name} (${profile.role})`;
+}
+
+loadPortfolio();
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Brand Analytics</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Brand Campaign Analytics</h1>
+
+<div id="analytics"></div>
+
+<script>
+const token = localStorage.getItem("token");
+
+async function loadAnalytics() {
+    const res = await fetch("/deals/my", { headers:{ "Authorization": token } });
+    const deals = await res.json();
+    const acceptedDeals = deals.filter(d=>d.status==="accepted" || d.status==="completed");
+    const totalPaid = acceptedDeals.reduce((a,b)=>a+parseFloat(b.amount),0);
+    document.getElementById("analytics").innerHTML = `
+        <p>Total Deals Posted: ${deals.length}</p>
+        <p>Total Deals Accepted/Completed: ${acceptedDeals.length}</p>
+        <p>Total Amount Paid to Creators (before platform fee): $${totalPaid}</p>
+    `;
+}
+
+loadAnalytics();
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html>
+<head>
+<title>Creator-Brand Marketplace</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+<h1>Connect Creators to Brands</h1>
+<p>Find the perfect content creators or get sponsored content for your brand.</p>
+<a href="signup.html"><button>Sign Up</button></a>
+<a href="login.html"><button>Login</button></a>
+</header>
+
+<section>
+<h2>How it Works</h2>
+<ol>
+<li>Brands post content opportunities.</li>
+<li>Creators apply and collaborate through the platform.</li>
+<li>Payments are secure; platform takes 9% fee automatically.</li>
+<li>Subscription unlocks full search and messaging features.</li>
+</ol>
+</section>
+
+<section>
+<h2>Why Us?</h2>
+<ul>
+<li>Secure payments via Stripe & PayPal</li>
+<li>Automated fee management</li>
+<li>Internal messaging only to protect both parties</li>
+<li>Analytics dashboard for brands</li>
+</ul>
+</section>
+
+<footer>
+<p>&copy; 2025 Creator-Brand Marketplace</p>
+</footer>
+
+</body>
+</html>
+app.use('/admin', require('./routes/admin'));
+router.get("/me", auth, async (req,res)=>{
+    res.json({id:req.user.id, name:req.user.name, role:req.user.role});
+});
